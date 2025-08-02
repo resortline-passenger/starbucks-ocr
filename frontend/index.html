@@ -2,110 +2,129 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <title>スタバレシート栄養照合</title>
+  <title>スタバレシート栄養照合（Vision API）</title>
   <style>
     body { font-family: sans-serif; max-width: 700px; margin: 2em auto; text-align: center; }
     #result, #nutrition { margin-top: 1em; white-space: pre-wrap; text-align: left; }
     #progress { margin-top: 1em; color: gray; }
     #log { margin-top: 1em; color: darkgreen; font-size: 0.9em; text-align: left; white-space: pre-wrap; display: none; }
-    #adminToggle { position: fixed; top: 10px; right: 10px; }
+    #passwordBox { margin-top: 1em; }
   </style>
 </head>
 <body>
   <h1>レシート画像で栄養素表示</h1>
-  <input type="file" id="imageInput" accept="image/*">
-  <label id="adminToggle">
-    <input type="checkbox" id="debugMode"> テストモード
+  <label>
+    <input type="checkbox" id="modeToggle"> テストモード
   </label>
+  <div id="passwordBox" style="display:none;">
+    <input type="password" id="testPassword" placeholder="パスワードを入力">
+  </div>
+  <input type="file" id="imageInput" accept="image/*">
   <div id="progress"></div>
   <div id="result"></div>
   <div id="nutrition"></div>
   <div id="log"></div>
 
   <script>
-    let debug = false;
-    const password = "adminpass"; // 任意に変更可
+    let isTestMode = false;
 
-    document.getElementById('debugMode').addEventListener('change', function () {
-      if (this.checked) {
-        const input = prompt("パスワードを入力してください:");
-        if (input === password) {
-          debug = true;
-          document.getElementById('log').style.display = "block";
-        } else {
-          alert("パスワードが違います");
-          this.checked = false;
-        }
+    const log = (msg) => {
+      if (isTestMode) {
+        const logEl = document.getElementById('log');
+        logEl.style.display = "block";
+        logEl.innerText += `\n${msg}`;
+      }
+    };
+
+    document.getElementById('modeToggle').addEventListener('change', (e) => {
+      const box = document.getElementById('passwordBox');
+      if (e.target.checked) {
+        box.style.display = 'block';
       } else {
-        debug = false;
-        document.getElementById('log').style.display = "none";
+        box.style.display = 'none';
+        isTestMode = false;
+        document.getElementById('log').style.display = 'none';
       }
     });
 
-    function log(msg) {
-      if (debug) {
-        document.getElementById("log").innerText += "\n" + msg;
+    document.getElementById('testPassword').addEventListener('keydown', async (e) => {
+      if (e.key === 'Enter') {
+        const pw = e.target.value;
+        const res = await fetch('/api/check-password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: pw })
+        });
+        const result = await res.json();
+        if (result.success) {
+          alert("✅ テストモードが有効です");
+          isTestMode = true;
+        } else {
+          alert("❌ パスワードが違います");
+          document.getElementById('modeToggle').checked = false;
+          document.getElementById('passwordBox').style.display = 'none';
+          isTestMode = false;
+        }
       }
-    }
-
-    async function fetchNutritionData() {
-      const res = await fetch("nutrition.json");
-      return res.json();
-    }
+    });
 
     document.getElementById('imageInput').addEventListener('change', async (e) => {
       const file = e.target.files[0];
       if (!file) return;
+
+      document.getElementById('progress').innerText = "OpenAI Vision APIで読み取り中...";
+      document.getElementById('log').innerText = isTestMode ? `[LOG] ファイル選択済み: ${file.name}` : "";
+
       const reader = new FileReader();
-
-      document.getElementById('progress').innerText = "画像解析中...";
-      document.getElementById('result').innerText = "";
-      document.getElementById('nutrition').innerText = "";
-      document.getElementById('log').innerText = debug ? "[LOG] ファイル選択済み: " + file.name : "";
-
       reader.onload = async () => {
-        const base64 = reader.result.split(',')[1];
-        log("[LOG] base64変換完了、APIリクエスト開始...");
+        try {
+          const base64 = reader.result.split(',')[1];
+          log("[LOG] base64変換完了、APIリクエスト開始...");
 
-        const response = await fetch("https://your-render-backend.onrender.com/api/vision", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ image: base64 })
-        });
+          const res = await fetch('/api/ocr', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image: base64 })
+          });
 
-        const data = await response.json();
-        log("[LOG] APIレスポンス: " + JSON.stringify(data));
+          const data = await res.json();
+          log("[LOG] APIレスポンス受信完了: " + JSON.stringify(data));
 
-        if (!data || !data.result) {
-          document.getElementById('result').innerText = "⚠️ 認識失敗";
-          return;
+          document.getElementById('result').innerText = JSON.stringify(data.item, null, 2);
+
+          matchNutrition(data.item);
+        } catch (err) {
+          log("[ERROR] 処理失敗: " + err.message);
+          document.getElementById('result').innerText = "⚠️ データ解析に失敗しました。";
+        } finally {
+          document.getElementById('progress').innerText = "";
         }
-
-        document.getElementById('result').innerText = JSON.stringify(data.result, null, 2);
-        const nutritionList = await fetchNutritionData();
-        const match = nutritionList.find(item =>
-          data.result.name.includes(item.keyword) &&
-          data.result.size === item.size &&
-          data.result.price === item.price
-        );
-
-        if (match) {
-          document.getElementById('nutrition').innerHTML = `
-            <p>🍹 商品名: ${match.name}（${match.size}）</p>
-            <p>🔥 カロリー: ${match.calories_kcal} kcal</p>
-            <p>💪 たんぱく質: ${match.protein_g} g</p>
-            <p>🧈 脂質: ${match.fat_g} g</p>
-            <p>🍚 炭水化物: ${match.carbs_g} g</p>
-          `;
-        } else {
-          document.getElementById('nutrition').innerText = "⚠️ 栄養成分データが見つかりませんでした。";
-        }
-
-        document.getElementById('progress').innerText = "";
       };
-
       reader.readAsDataURL(file);
     });
+
+    async function matchNutrition(item) {
+      const res = await fetch("nutrition.json");
+      const nutritionData = await res.json();
+
+      const found = nutritionData.find(entry =>
+        item.name.includes(entry.match) && entry.size === item.size
+      );
+
+      if (found) {
+        document.getElementById('nutrition').innerHTML = `
+          <p>🍹 商品名: ${found.name}（${found.size}）</p>
+          <p>🔥 カロリー: ${found.calories_kcal} kcal</p>
+          <p>💪 たんぱく質: ${found.protein_g} g</p>
+          <p>🧈 脂質: ${found.fat_g} g</p>
+          <p>🍚 炭水化物: ${found.carbs_g} g</p>
+        `;
+        log("[LOG] 栄養データ照合成功");
+      } else {
+        document.getElementById('nutrition').innerText = "⚠️ 栄養成分データが見つかりませんでした。";
+        log("[WARN] 栄養照合に失敗");
+      }
+    }
   </script>
 </body>
 </html>
