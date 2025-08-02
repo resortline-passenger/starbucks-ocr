@@ -2,23 +2,24 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <title>スタバレシート栄養照合（Vision API）</title>
+  <title>スタバレシート栄養照合</title>
   <style>
     body { font-family: sans-serif; max-width: 700px; margin: 2em auto; text-align: center; }
     #result, #nutrition { margin-top: 1em; white-space: pre-wrap; text-align: left; }
     #progress { margin-top: 1em; color: gray; }
-    #log { margin-top: 1em; color: darkgreen; font-size: 0.9em; text-align: left; white-space: pre-wrap; display: none; }
-    #passwordBox { margin-top: 1em; }
+    #log { margin-top: 1em; color: darkgreen; font-size: 0.9em; text-align: left; white-space: pre-wrap; }
+    #testModeToggle { margin-left: 0.5em; }
+    .toggle-label { position: fixed; top: 10px; right: 10px; background: #eee; padding: 0.5em; border-radius: 4px; }
   </style>
 </head>
 <body>
   <h1>レシート画像で栄養素表示</h1>
-  <label>
-    <input type="checkbox" id="modeToggle"> テストモード
+
+  <!-- ✅ テストモード切替チェック -->
+  <label class="toggle-label">
+    <input type="checkbox" id="testModeToggle"> テストモード
   </label>
-  <div id="passwordBox" style="display:none;">
-    <input type="password" id="testPassword" placeholder="パスワードを入力">
-  </div>
+
   <input type="file" id="imageInput" accept="image/*">
   <div id="progress"></div>
   <div id="result"></div>
@@ -26,54 +27,37 @@
   <div id="log"></div>
 
   <script>
-    let isTestMode = false;
+    let testMode = false;
+    const TEST_PASSWORD = "test1234"; // 本番では backend に移行推奨
 
-    const log = (msg) => {
-      if (isTestMode) {
-        const logEl = document.getElementById('log');
-        logEl.style.display = "block";
-        logEl.innerText += `\n${msg}`;
-      }
-    };
-
-    document.getElementById('modeToggle').addEventListener('change', (e) => {
-      const box = document.getElementById('passwordBox');
+    document.getElementById('testModeToggle').addEventListener('change', (e) => {
       if (e.target.checked) {
-        box.style.display = 'block';
+        const input = prompt("テストモードのパスワードを入力してください:");
+        if (input === TEST_PASSWORD) {
+          testMode = true;
+          log("[MODE] テストモード有効");
+        } else {
+          alert("パスワードが違います");
+          e.target.checked = false;
+        }
       } else {
-        box.style.display = 'none';
-        isTestMode = false;
-        document.getElementById('log').style.display = 'none';
+        testMode = false;
+        log("[MODE] テストモード解除");
       }
     });
 
-    document.getElementById('testPassword').addEventListener('keydown', async (e) => {
-      if (e.key === 'Enter') {
-        const pw = e.target.value;
-        const res = await fetch('/api/check-password', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ password: pw })
-        });
-        const result = await res.json();
-        if (result.success) {
-          alert("✅ テストモードが有効です");
-          isTestMode = true;
-        } else {
-          alert("❌ パスワードが違います");
-          document.getElementById('modeToggle').checked = false;
-          document.getElementById('passwordBox').style.display = 'none';
-          isTestMode = false;
-        }
-      }
-    });
+    function log(message) {
+      if (!testMode) return;
+      const logEl = document.getElementById('log');
+      logEl.innerText += `\n${message}`;
+    }
 
     document.getElementById('imageInput').addEventListener('change', async (e) => {
       const file = e.target.files[0];
       if (!file) return;
 
-      document.getElementById('progress').innerText = "OpenAI Vision APIで読み取り中...";
-      document.getElementById('log').innerText = isTestMode ? `[LOG] ファイル選択済み: ${file.name}` : "";
+      document.getElementById('progress').innerText = "レシート読み取り中...";
+      document.getElementById('log').innerText = "[LOG] ファイル選択済み: " + file.name;
 
       const reader = new FileReader();
       reader.onload = async () => {
@@ -81,21 +65,28 @@
           const base64 = reader.result.split(',')[1];
           log("[LOG] base64変換完了、APIリクエスト開始...");
 
-          const res = await fetch('/api/ocr', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+          const response = await fetch("/api/vision", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ image: base64 })
           });
 
-          const data = await res.json();
+          log("[LOG] APIレスポンス受信中...");
+          const data = await response.json();
           log("[LOG] APIレスポンス受信完了: " + JSON.stringify(data));
 
-          document.getElementById('result').innerText = JSON.stringify(data.item, null, 2);
+          const content = data.text;
+          document.getElementById('result').innerText = content;
 
-          matchNutrition(data.item);
-        } catch (err) {
-          log("[ERROR] 処理失敗: " + err.message);
-          document.getElementById('result').innerText = "⚠️ データ解析に失敗しました。";
+          try {
+            const parsed = JSON.parse(content);
+            matchNutrition(parsed);
+          } catch (e) {
+            document.getElementById('nutrition').innerText = "⚠️ JSONの解析に失敗しました。";
+            log("[ERROR] JSON解析失敗: " + e.message);
+          }
+        } catch (error) {
+          log("[ERROR] 処理中に例外が発生: " + error.message);
         } finally {
           document.getElementById('progress').innerText = "";
         }
@@ -104,25 +95,30 @@
     });
 
     async function matchNutrition(item) {
-      const res = await fetch("nutrition.json");
-      const nutritionData = await res.json();
+      try {
+        const res = await fetch('/nutrition.json');
+        const nutritionData = await res.json();
 
-      const found = nutritionData.find(entry =>
-        item.name.includes(entry.match) && entry.size === item.size
-      );
+        // 金額による補助一致
+        const matched = nutritionData.find(entry =>
+          entry.name.includes(item.name.replace(/ブラ/g, "")) && entry.size === item.size
+        );
 
-      if (found) {
-        document.getElementById('nutrition').innerHTML = `
-          <p>🍹 商品名: ${found.name}（${found.size}）</p>
-          <p>🔥 カロリー: ${found.calories_kcal} kcal</p>
-          <p>💪 たんぱく質: ${found.protein_g} g</p>
-          <p>🧈 脂質: ${found.fat_g} g</p>
-          <p>🍚 炭水化物: ${found.carbs_g} g</p>
-        `;
-        log("[LOG] 栄養データ照合成功");
-      } else {
-        document.getElementById('nutrition').innerText = "⚠️ 栄養成分データが見つかりませんでした。";
-        log("[WARN] 栄養照合に失敗");
+        if (matched) {
+          document.getElementById('nutrition').innerHTML = `
+            <p>🍹 商品名: ${matched.name}（${matched.size}）</p>
+            <p>🔥 カロリー: ${matched.calories_kcal} kcal</p>
+            <p>💪 たんぱく質: ${matched.protein_g} g</p>
+            <p>🧈 脂質: ${matched.fat_g} g</p>
+            <p>🍚 炭水化物: ${matched.carbs_g} g</p>
+          `;
+          log("[LOG] 栄養データ照合成功");
+        } else {
+          document.getElementById('nutrition').innerText = "⚠️ 栄養成分データが見つかりませんでした。";
+          log("[WARN] 該当商品がnutrition.jsonに見つかりません");
+        }
+      } catch (err) {
+        log("[ERROR] nutrition.jsonの読み込みに失敗しました: " + err.message);
       }
     }
   </script>
