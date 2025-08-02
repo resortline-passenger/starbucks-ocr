@@ -28,7 +28,7 @@
         document.getElementById('log').innerText += `[LOG] ${msg}\n`;
     };
 
-    document.getElementById('testMode').addEventListener('change', async (e) => {
+    document.getElementById('testMode').addEventListener('change', (e) => {
       if (e.target.checked) {
         const pw = prompt("テストモードのパスワードを入力してください:");
         if (pw === "testpass123") {

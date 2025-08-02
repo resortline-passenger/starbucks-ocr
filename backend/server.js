@@ -40,7 +40,13 @@ app.post("/analyze", async (req, res) => {
 
     const data = await response.json();
     const content = data?.choices?.[0]?.message?.content;
-    if (!content) throw new Error("OpenAI API response is invalid");
+    if (!content) {
+      console.error("[ERROR] OpenAI API response error:", data);
+      return res.status(500).send(JSON.stringify({
+        error: "OpenAI APIからの応答が不正です",
+        raw: data
+      }));
+    }
     res.send(content);
   } catch (err) {
     res.status(500).send(JSON.stringify({ error: err.message }));
