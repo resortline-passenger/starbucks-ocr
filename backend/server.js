@@ -1,37 +1,21 @@
-// backend/server.js
-
+require("dotenv").config();
 const express = require("express");
-const cors = require("cors");
-const dotenv = require("dotenv");
+const bodyParser = require("body-parser");
 const fetch = require("node-fetch");
-
-dotenv.config();
+const path = require("path");
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+app.use(bodyParser.json({ limit: "10mb" }));
+app.use(express.static(path.join(__dirname, "../frontend")));
 
-if (!OPENAI_API_KEY) {
-  console.error("❌ .env に OPENAI_API_KEY が設定されていません");
-  process.exit(1);
-}
-
-app.use(cors());
-app.use(express.json({ limit: "10mb" }));
-
-app.post("/api/vision", async (req, res) => {
-  const imageBase64 = req.body.image;
-
-  if (!imageBase64) {
-    return res.status(400).json({ error: "画像データが送信されていません" });
-  }
-
+app.post("/analyze", async (req, res) => {
   try {
+    const { image } = req.body;
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${OPENAI_API_KEY}`,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
       },
       body: JSON.stringify({
         model: "gpt-4o",
@@ -41,13 +25,11 @@ app.post("/api/vision", async (req, res) => {
             content: [
               {
                 type: "text",
-                text: "日本のスターバックスレシートから、商品名、サイズ（Short, Tallなど）、数量、金額、持ち帰りかどうかを抽出してください。JSON形式で次のように返してください: {\"name\":\"...\",\"size\":\"...\",\"quantity\":1,\"price\":637,\"to_go\":true}"
+                text: "日本のスタバレシートから商品名・サイズ・数量・持ち帰りかをJSONで抽出して下さい"
               },
               {
                 type: "image_url",
-                image_url: {
-                  url: `data:image/jpeg;base64,${imageBase64}`
-                }
+                image_url: { url: `data:image/jpeg;base64,${image}` }
               }
             ]
           }
@@ -57,19 +39,15 @@ app.post("/api/vision", async (req, res) => {
     });
 
     const data = await response.json();
-
-    if (!response.ok) {
-      console.error("🔴 OpenAI APIエラー:", data);
-      return res.status(response.status).json({ error: data.error || "OpenAI Vision APIエラー" });
-    }
-
-    res.json(data);
-  } catch (error) {
-    console.error("❌ Vision API通信中にエラー:", error);
-    res.status(500).json({ error: "Vision APIリクエストに失敗しました", details: error.message });
+    const content = data?.choices?.[0]?.message?.content;
+    if (!content) throw new Error("OpenAI API response is invalid");
+    res.send(content);
+  } catch (err) {
+    res.status(500).send(JSON.stringify({ error: err.message }));
   }
 });
 
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 サーバー起動中: http://localhost:${PORT}`);
+  console.log(`✅ Server started on http://localhost:${PORT}`);
 });
