@@ -1,0 +1,9 @@
+# 機密ファイル
+backend/.env
+
+# Node.js依存
+node_modules/
+
+# macOSやVSCode関連の無視ファイル
+.DS_Store
+.vscode/
